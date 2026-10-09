@@ -1,4 +1,4 @@
-name: Build Kernel POCO F4 (munch) HyperOS - KernelSU (backslashxx) + NoMount v2.1.0
+name: Build Kernel POCO F4 (munch) HyperOS - ReSukiSU (BakaSU) + NoMount v2.1.0
 
 # Based on NKRLabs/kernel_xiaomi_sm8250_mod (branch android15-lineage22-mod)
 # MIUI/HyperOS variant. The build recipe follows this source tree’s build.sh
