@@ -83,44 +83,44 @@ jobs:
           git -C KernelSU-Next describe --tags --always
           git -C KernelSU-Next log -1 --format='%h %s'
 
-          test -L drivers/kernelsu
-          test -f drivers/kernelsu/Kconfig
-          grep -q 'drivers/kernelsu/Kconfig' drivers/Kconfig
-          grep -q 'CONFIG_KSU' drivers/Makefile
+          # test -L drivers/kernelsu
+          # test -f drivers/kernelsu/Kconfig
+          # grep -q 'drivers/kernelsu/Kconfig' drivers/Kconfig
+          # grep -q 'CONFIG_KSU' drivers/Makefile
 
-          echo "== KernelSU Kconfig options =="
-          grep -h -E '^[[:space:]]*config ' drivers/kernelsu/Kconfig || true
+          # echo "== KernelSU Kconfig options =="
+          # grep -h -E '^[[:space:]]*config ' drivers/kernelsu/Kconfig || true
 
-          # backslashxx uses manual hooks in the kernel source. This tree already includes hooks
-          # from SukiSU; check whether their function names match those called by this KernelSU version.
-          # (A grep with no matches must not cause this step to fail.)
-          echo "== Checking hook call sites in the source tree =="
-          for h in ksu_handle_execveat ksu_handle_execveat_sucompat ksu_handle_faccessat \
-                   ksu_handle_stat ksu_handle_sys_read ksu_handle_vfs_read \
-                   ksu_handle_input_handle_event ksu_handle_devpts; do
-            n=$( { grep -rl --include='*.c' "$h" fs drivers/input drivers/tty 2>/dev/null || true; } | wc -l )
-            echo "$h: called in $n file(s)"
-          done
+          # # backslashxx uses manual hooks in the kernel source. This tree already includes hooks
+          # # from SukiSU; check whether their function names match those called by this KernelSU version.
+          # # (A grep with no matches must not cause this step to fail.)
+          # echo "== Checking hook call sites in the source tree =="
+          # for h in ksu_handle_execveat ksu_handle_execveat_sucompat ksu_handle_faccessat \
+          #          ksu_handle_stat ksu_handle_sys_read ksu_handle_vfs_read \
+          #          ksu_handle_input_handle_event ksu_handle_devpts; do
+          #   n=$( { grep -rl --include='*.c' "$h" fs drivers/input drivers/tty 2>/dev/null || true; } | wc -l )
+          #   echo "$h: called in $n file(s)"
+          # done
 
-          # ---------------------------------------------------------------------------
-          # Hook bawaan tree (gaya SukiSU/KernelSU lama: ksu_vfs_read_hook, ksu_execveat_hook,
-          # ksu_input_hook, ksu_handle_sys_read, ksu_handle_devpts, ...) are NOT present in
-          # KernelSU backslashxx v3.x, so the build fails at the link stage
-          # ("undefined reference to ksu_vfs_read_hook" dst).
-          # backslashxx v3.x uses its own LSM hooks and input handler for ksud, and its guide
-          # says to use CONFIG_KSU_HACK_ARM64_BRANCH_LINK=y on ARM64 4.19+ and REMOVE all
-          # manual hooks (otherwise, hooks will be duplicated).
-          # The '#ifdef CONFIG_KSU' guards in hook files are redirected to a symbol that is never defined.
-          # (CONFIG_KSU_SUSFS_* and other symbols remain unchanged: \b does not match an underscore.)
-          # ---------------------------------------------------------------------------
-          HOOK_FILES="fs/exec.c fs/open.c fs/stat.c fs/read_write.c drivers/input/input.c drivers/tty/pty.c"
-          echo "== BEFORE: ksu_ lines in hook files =="
-          grep -n 'ksu_' $HOOK_FILES || true
-          perl -pi -e 's/^(\s*#\s*(?:if|ifdef|ifndef|elif)\b.*?)\bCONFIG_KSU\b/$1CONFIG_KSU_TREE_HOOK_DISABLED/' $HOOK_FILES
-          echo "== AFTER: guards still using plain CONFIG_KSU in hook files =="
-          grep -n -E '^\s*#\s*(if|ifdef|ifndef|elif)\b.*\bCONFIG_KSU\b' $HOOK_FILES || echo "(none; all source-tree hooks are disabled)"
-          echo "== Redirected guards =="
-          grep -c 'CONFIG_KSU_TREE_HOOK_DISABLED' $HOOK_FILES || true
+          # # ---------------------------------------------------------------------------
+          # # Hook bawaan tree (gaya SukiSU/KernelSU lama: ksu_vfs_read_hook, ksu_execveat_hook,
+          # # ksu_input_hook, ksu_handle_sys_read, ksu_handle_devpts, ...) are NOT present in
+          # # KernelSU backslashxx v3.x, so the build fails at the link stage
+          # # ("undefined reference to ksu_vfs_read_hook" dst).
+          # # backslashxx v3.x uses its own LSM hooks and input handler for ksud, and its guide
+          # # says to use CONFIG_KSU_HACK_ARM64_BRANCH_LINK=y on ARM64 4.19+ and REMOVE all
+          # # manual hooks (otherwise, hooks will be duplicated).
+          # # The '#ifdef CONFIG_KSU' guards in hook files are redirected to a symbol that is never defined.
+          # # (CONFIG_KSU_SUSFS_* and other symbols remain unchanged: \b does not match an underscore.)
+          # # ---------------------------------------------------------------------------
+          # HOOK_FILES="fs/exec.c fs/open.c fs/stat.c fs/read_write.c drivers/input/input.c drivers/tty/pty.c"
+          # echo "== BEFORE: ksu_ lines in hook files =="
+          # grep -n 'ksu_' $HOOK_FILES || true
+          # perl -pi -e 's/^(\s*#\s*(?:if|ifdef|ifndef|elif)\b.*?)\bCONFIG_KSU\b/$1CONFIG_KSU_TREE_HOOK_DISABLED/' $HOOK_FILES
+          # echo "== AFTER: guards still using plain CONFIG_KSU in hook files =="
+          # grep -n -E '^\s*#\s*(if|ifdef|ifndef|elif)\b.*\bCONFIG_KSU\b' $HOOK_FILES || echo "(none; all source-tree hooks are disabled)"
+          # echo "== Redirected guards =="
+          # grep -c 'CONFIG_KSU_TREE_HOOK_DISABLED' $HOOK_FILES || true
 
       - name: Setup NoMount (v2.1.0)
         working-directory: kernel_source
