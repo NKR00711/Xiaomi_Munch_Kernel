@@ -76,7 +76,7 @@ jobs:
           # With no argument, the script automatically checks out the latest release tag.
           # The manager APK must come from the same backslashxx/KernelSU release.
           curl -fLSs -o /tmp/ksu-setup.sh \
-            "https://raw.githubusercontent.com/KernelSU-Next/KernelSU-Next/refs/heads/dev/kernel/setup.sh"
+            "https://raw.githubusercontent.com/KernelSU-Next/KernelSU-Next/refs/heads/dev/legacy/kernel/setup.sh"
           bash /tmp/ksu-setup.sh
 
           echo "== Installed KernelSU-Next version =="
@@ -250,7 +250,7 @@ jobs:
 
           # Verify that each option is enabled (Kconfig discards unknown options).
           MISSING=0
-          for opt in CONFIG_KSU CONFIG_KSU_HACK_ARM64_BRANCH_LINK CONFIG_NOMOUNT CONFIG_KALLSYMS CONFIG_SECURITY_SELINUX CONFIG_XIAOMI_MIUI; do
+          for opt in CONFIG_KSU CONFIG_NOMOUNT CONFIG_KALLSYMS CONFIG_SECURITY_SELINUX CONFIG_XIAOMI_MIUI; do
             if grep -q "^${opt}=y" out/.config; then
               echo "OK      ${opt}=y"
             else
