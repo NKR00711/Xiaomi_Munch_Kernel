@@ -79,9 +79,9 @@ jobs:
             "https://raw.githubusercontent.com/KernelSU-Next/KernelSU-Next/refs/heads/dev/kernel/setup.sh"
           bash /tmp/ksu-setup.sh
 
-          echo "== Installed KernelSU version =="
-          git -C KernelSU describe --tags --always
-          git -C KernelSU log -1 --format='%h %s'
+          echo "== Installed KernelSU-Next version =="
+          git -C KernelSU-Next describe --tags --always
+          git -C KernelSU-Next log -1 --format='%h %s'
 
           test -L drivers/kernelsu
           test -f drivers/kernelsu/Kconfig
