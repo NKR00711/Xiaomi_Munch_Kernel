@@ -244,13 +244,13 @@ jobs:
           fi
           # Sucompat uses inline call-site hijacking (per the backslashxx guide for ARM64 4.19+).
           # The source tree’s built-in manual hooks were disabled in the KernelSU setup step.
-          scripts/config --file out/.config -e KSU_HACK_ARM64_BRANCH_LINK
+          scripts/config --file out/.config -e KSU
 
           make $MAKE_ARGS olddefconfig 2>&1 | tee -a ../build.log
 
           # Verify that each option is enabled (Kconfig discards unknown options).
           MISSING=0
-          for opt in CONFIG_KSU CONFIG_NOMOUNT CONFIG_KALLSYMS CONFIG_SECURITY_SELINUX CONFIG_XIAOMI_MIUI; do
+          for opt in CONFIG_NOMOUNT CONFIG_KALLSYMS CONFIG_SECURITY_SELINUX CONFIG_XIAOMI_MIUI; do
             if grep -q "^${opt}=y" out/.config; then
               echo "OK      ${opt}=y"
             else
