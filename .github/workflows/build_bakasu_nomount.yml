@@ -1,4 +1,4 @@
-name: Build Kernel POCO F4 (munch) HyperOS - ReSukiSU (BakaSU) + NoMount v2.1.0
+name: Build Kernel POCO F4 (munch) HyperOS - ReSukiSU (BakaSU) + SuSFS + NoMount
 
 # Based on NKRLabs/kernel_xiaomi_sm8250_mod (branch android15-lineage22-mod)
 # MIUI/HyperOS variant. The build recipe follows this source tree’s build.sh
@@ -89,15 +89,15 @@ jobs:
           grep -q 'security/baseband-guard/Kconfig' security/Kconfig
           echo "[+] Baseband-guard setup finished."
 
-      - name: Setup ReSukiSU (Multi-Manager with SuSFS)
+      - name: Setup ReSukiSU (BakaSU) with SuSFS
         working-directory: kernel_source
         run: |
           set -eo pipefail
-          echo "[*] Injecting ReSukiSU / RKSU Multi-Manager (Non-GKI 4.19 with SuSFS) Source..."
-          # Pin to a tested release tag to avoid upstream breaking changes
-          curl -LSs "https://raw.githubusercontent.com/Baka-SU/BakaSU/main/kernel/setup.sh" | bash -s -- v4.2.0-rc3
+          echo "[*] Injecting ReSukiSU (BakaSU) / RKSU Multi-Manager (Non-GKI 4.19 with SuSFS) Source..."
+          # BakaSU (formerly ReSukiSU) setup script
+          curl -LSs "https://raw.githubusercontent.com/Baka-SU/BakaSU/main/kernel/setup.sh" | bash
 
-          echo "== Installed ReSukiSU version =="
+          echo "== Installed BakaSU/ReSukiSU version =="
           git -C KernelSU describe --tags --always || true
           git -C KernelSU log -1 --format='%h %s' || true
 
@@ -105,6 +105,9 @@ jobs:
           test -f drivers/kernelsu/Kconfig
           grep -q 'drivers/kernelsu/Kconfig' drivers/Kconfig
           grep -q 'CONFIG_KSU' drivers/Makefile
+
+          echo "== BakaSU Kconfig options available =="
+          grep -h -E '^[[:space:]]*config KSU' drivers/kernelsu/Kconfig || true
 
           # Force KSU_SUSFS as default choice (prevents fallback to non-GKI incompatible tracepoint hook)
           if [ -f "drivers/kernelsu/Kconfig" ]; then
@@ -151,7 +154,7 @@ jobs:
                   print("ℹ️ " + apk_sign_path + " already patched or target signature pattern handled")
           ' 2>/dev/null || true
 
-          echo "[+] ReSukiSU Multi-Manager Non-GKI setup finished."
+          echo "[+] ReSukiSU (BakaSU) Multi-Manager Non-GKI setup finished."
 
       - name: Setup NoMount (v2.1.0)
         working-directory: kernel_source
@@ -244,18 +247,14 @@ jobs:
             -e MI_FRAGMENTION -e PERF_HELPER -e BOOTUP_RECLAIM -e MI_RECLAIM -e RTMM
 
           # --- Kernel version string: 4.19.325-NKR-Munch ---
-          # The "+" is included directly in the name, so the result is always 4.19.325-NKR-Munch+.
-          # (It does not depend on Git status.) LOCALVERSION_AUTO is disabled to prevent a Git hash from being added.
           scripts/config --file out/.config \
             --set-str LOCALVERSION "${KERNEL_LOCALVERSION}" -d LOCALVERSION_AUTO
 
           # --- Networking: options used by Android 14 netd / ConnectivityService ---
-          # Without BPF cgroups/xt_bpf, sock_diag (INET_DIAG_DESTROY), and MSS clamping,
-          # Wi-Fi may appear connected while apps cannot load, even though mobile data works normally.
-          # Options unsupported by this source tree are automatically discarded by olddefconfig.
           scripts/config --file out/.config \
             -e NET -e INET -e IPV6 \
             -e BPF_SYSCALL -e BPF_JIT -e CGROUP_BPF \
+            -e BPF_UNPRIV_DEFAULT_OFF \
             -e NET_CLS_BPF -e NET_ACT_BPF -e NET_CLS_ACT -e NET_SCH_INGRESS \
             -e NETFILTER_XT_MATCH_BPF -e NETFILTER_XT_MATCH_OWNER \
             -e NETFILTER_XT_TARGET_TCPMSS -e NETFILTER_XT_MATCH_TCPMSS \
@@ -263,25 +262,42 @@ jobs:
             -e IP6_NF_IPTABLES -e IP6_NF_FILTER -e IP6_NF_MANGLE -e IP6_NF_NAT
 
           # --- Kernel logs: restrict dmesg access to root ---
-          # The "avc: denied" messages are also recorded in the kernel log. This option sets dmesg_restrict=1
-          # at boot, preventing regular apps from reading the kernel log.
-          # CONFIG_AUDIT is intentionally NOT disabled: SELinux depends on it.
           scripts/config --file out/.config -e SECURITY_DMESG_RESTRICT
 
-          # --- KernelSU (backslashxx) + NoMount ---
-          scripts/config --file out/.config -e KSU -e KALLSYMS -e NOMOUNT
-          if grep -q 'KSU_MANUAL_HOOK' drivers/kernelsu/Kconfig 2>/dev/null; then
-            scripts/config --file out/.config -e KSU_MANUAL_HOOK
-          fi
-          # Sucompat uses inline call-site hijacking (per the backslashxx guide for ARM64 4.19+).
-          # The source tree’s built-in manual hooks were disabled in the KernelSU setup step.
-          scripts/config --file out/.config -e KSU_HACK_ARM64_BRANCH_LINK
+          # --- ReSukiSU (BakaSU) + SuSFS + NoMount ---
+          scripts/config --file out/.config \
+            -e KSU \
+            -e KALLSYMS \
+            -e NOMOUNT \
+            -e KSU_SUSFS \
+            -e KSU_MULTI_MANAGER_SUPPORT \
+            -e KSU_SUSFS_SUS_PATH \
+            -e KSU_SUSFS_SUS_MOUNT \
+            -e KSU_SUSFS_SUS_KSTAT \
+            -e KSU_SUSFS_SPOOF_UNAME \
+            -e KSU_SUSFS_ENABLE_LOG \
+            -e KSU_SUSFS_HIDE_KSU_SUSFS_SYMBOLS \
+            -e KSU_SUSFS_SPOOF_CMDLINE_OR_BOOTCONFIG \
+            -e KSU_SUSFS_OPEN_REDIRECT \
+            -e KSU_SUSFS_SUS_MAP \
+            -e THREAD_INFO_IN_TASK \
+            -d KSU_TRACEPOINT_HOOK \
+            -d KSU_DISABLE_MANAGER \
+            -e KSU_HACK_ARM64_BRANCH_LINK
 
           make $MAKE_ARGS olddefconfig 2>&1 | tee -a ../build.log
 
           # Verify that each option is enabled (Kconfig discards unknown options).
           MISSING=0
-          for opt in CONFIG_KSU CONFIG_KSU_HACK_ARM64_BRANCH_LINK CONFIG_NOMOUNT CONFIG_KALLSYMS CONFIG_SECURITY_SELINUX CONFIG_XIAOMI_MIUI; do
+          for opt in CONFIG_KSU CONFIG_KSU_HACK_ARM64_BRANCH_LINK CONFIG_NOMOUNT CONFIG_KALLSYMS \
+                     CONFIG_SECURITY_SELINUX CONFIG_XIAOMI_MIUI \
+                     CONFIG_KSU_SUSFS CONFIG_KSU_MULTI_MANAGER_SUPPORT \
+                     CONFIG_KSU_SUSFS_SUS_PATH CONFIG_KSU_SUSFS_SUS_MOUNT \
+                     CONFIG_KSU_SUSFS_SUS_KSTAT CONFIG_KSU_SUSFS_SPOOF_UNAME \
+                     CONFIG_KSU_SUSFS_HIDE_KSU_SUSFS_SYMBOLS \
+                     CONFIG_KSU_SUSFS_SPOOF_CMDLINE_OR_BOOTCONFIG \
+                     CONFIG_KSU_SUSFS_OPEN_REDIRECT CONFIG_KSU_SUSFS_SUS_MAP \
+                     CONFIG_THREAD_INFO_IN_TASK; do
             if grep -q "^${opt}=y" out/.config; then
               echo "OK      ${opt}=y"
             else
@@ -293,7 +309,7 @@ jobs:
             echo "::error::A required kernel option is disabled; see the MISSING entries above."
             exit 1
           fi
-          grep -E '^CONFIG_KSU' out/.config || true
+          grep -E '^CONFIG_(KSU|BBG)' out/.config || true
 
           # Informational only (does not fail the build): final network option status.
           echo "== Network options in out/.config =="
@@ -378,7 +394,7 @@ jobs:
             --target "${{ github.sha }}" \
             --prerelease \
             --title "POCO F4 munch HyperOS kernel #${{ github.run_number }}" \
-            --notes "Kernel 4.19.325 (MIUI/HyperOS variant) + KernelSU backslashxx + NoMount ${NOMOUNT_VERSION}. Not tested on every HyperOS build; back up the stock boot image before flashing."
+            --notes "Kernel 4.19.325 (MIUI/HyperOS variant) + ReSukiSU (BakaSU) + SuSFS + NoMount ${NOMOUNT_VERSION}. Not tested on every HyperOS build; back up the stock boot image before flashing."
           echo "Release: https://github.com/${{ github.repository }}/releases/tag/$TAG"
 
       - name: Upload build log (if the build fails)
