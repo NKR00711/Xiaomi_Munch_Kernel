@@ -1,0 +1,362 @@
+name: Build Kernel POCO F4 (munch) HyperOS - KernelSU (backslashxx) + NoMount v2.1.0
+
+# Based on NKRLabs/kernel_xiaomi_sm8250_mod (branch android15-lineage22-mod)
+# MIUI/HyperOS variant. The build recipe follows this source tree’s build.sh
+# (Proton Clang 20210522 toolchain, munch_defconfig, MIUI flags, and panel DTS patches).
+# The AOSP variant is NOT used: HyperOS has different display drivers, which would result in a black screen.
+
+on:
+  workflow_dispatch:
+
+permissions:
+  contents: write   # Required to create a GitHub Release
+
+env:
+  FORCE_JAVASCRIPT_ACTIONS_TO_NODE24: "true"   # Suppress the Node.js 20 warning for upload-artifact
+  ARCH: arm64
+  SUBARCH: arm64
+  KBUILD_BUILD_USER: NKR00711
+  KBUILD_BUILD_HOST: github-actions
+  KBUILD_BUILD_TIMESTAMP: "Wed Apr 9 13:36:00 UTC 2025"
+  KERNEL_LOCALVERSION: "-NKR-Munch+"   # (uname -r / KernelSU)
+  TZ: Asia/Jakarta
+  NOMOUNT_VERSION: v2.1.0
+  KERNEL_REPO: https://github.com/NKRLabs/kernel_xiaomi_sm8250_mod
+  KERNEL_BRANCH: android15-lineage22-mod
+  DEVICE: munch
+
+jobs:
+  build:
+    runs-on: ubuntu-22.04
+    steps:
+      - name: Cleanup disk
+        run: |
+          sudo rm -rf /usr/share/dotnet
+          sudo rm -rf /usr/local/lib/android
+          sudo rm -rf /opt/ghc
+          sudo rm -rf /opt/hostedtoolcache/CodeQL
+          df -h
+
+      - name: Install dependencies
+        run: |
+          sudo apt-get update
+          sudo apt-get install -y \
+            build-essential git curl wget bison flex zip unzip bc cpio rsync \
+            libssl-dev libelf-dev lz4 python-is-python3
+          python --version
+
+      - name: Setup toolchain (proton-clang 20210522)
+        run: |
+          set -eo pipefail
+          mkdir -p "$HOME/proton-clang"
+          cd "$HOME/proton-clang"
+          wget -q https://github.com/kdrag0n/proton-clang/archive/refs/tags/20210522.zip
+          unzip -q 20210522.zip
+          rm -f 20210522.zip
+          TC="$HOME/proton-clang/proton-clang-20210522/bin"
+          echo "$TC" >> "$GITHUB_PATH"
+          export PATH="$TC:$PATH"
+          clang --version | head -1
+          aarch64-linux-gnu-ld --version | head -1
+          arm-linux-gnueabi-ld --version | head -1
+
+      - name: Clone kernel source
+        run: |
+          set -eo pipefail
+          git clone --depth=1 -b "$KERNEL_BRANCH" "$KERNEL_REPO" kernel_source
+          git -C kernel_source log -1 --format='Source: %h %s'
+          grep -E '^(VERSION|PATCHLEVEL|SUBLEVEL) ' kernel_source/Makefile
+          test -f "kernel_source/arch/arm64/configs/${DEVICE}_defconfig"
+          test -d kernel_source/techpack/display
+
+      - name: Setup KernelSU (backslashxx/KernelSU)
+        working-directory: kernel_source
+        run: |
+          set -eo pipefail
+          # With no argument, the script automatically checks out the latest release tag.
+          # The manager APK must come from the same backslashxx/KernelSU release.
+          curl -fLSs -o /tmp/ksu-setup.sh \
+            "https://raw.githubusercontent.com/backslashxx/KernelSU/master/kernel/setup.sh"
+          bash /tmp/ksu-setup.sh
+
+          echo "== Installed KernelSU version =="
+          git -C KernelSU describe --tags --always
+          git -C KernelSU log -1 --format='%h %s'
+
+          test -L drivers/kernelsu
+          test -f drivers/kernelsu/Kconfig
+          grep -q 'drivers/kernelsu/Kconfig' drivers/Kconfig
+          grep -q 'CONFIG_KSU' drivers/Makefile
+
+          echo "== KernelSU Kconfig options =="
+          grep -h -E '^[[:space:]]*config ' drivers/kernelsu/Kconfig || true
+
+          # backslashxx uses manual hooks in the kernel source. This tree already includes hooks
+          # from SukiSU; check whether their function names match those called by this KernelSU version.
+          # (A grep with no matches must not cause this step to fail.)
+          echo "== Checking hook call sites in the source tree =="
+          for h in ksu_handle_execveat ksu_handle_execveat_sucompat ksu_handle_faccessat \
+                   ksu_handle_stat ksu_handle_sys_read ksu_handle_vfs_read \
+                   ksu_handle_input_handle_event ksu_handle_devpts; do
+            n=$( { grep -rl --include='*.c' "$h" fs drivers/input drivers/tty 2>/dev/null || true; } | wc -l )
+            echo "$h: called in $n file(s)"
+          done
+
+          # ---------------------------------------------------------------------------
+          # Hook bawaan tree (gaya SukiSU/KernelSU lama: ksu_vfs_read_hook, ksu_execveat_hook,
+          # ksu_input_hook, ksu_handle_sys_read, ksu_handle_devpts, ...) are NOT present in
+          # KernelSU backslashxx v3.x, so the build fails at the link stage
+          # ("undefined reference to ksu_vfs_read_hook" dst).
+          # backslashxx v3.x uses its own LSM hooks and input handler for ksud, and its guide
+          # says to use CONFIG_KSU_HACK_ARM64_BRANCH_LINK=y on ARM64 4.19+ and REMOVE all
+          # manual hooks (otherwise, hooks will be duplicated).
+          # The '#ifdef CONFIG_KSU' guards in hook files are redirected to a symbol that is never defined.
+          # (CONFIG_KSU_SUSFS_* and other symbols remain unchanged: \b does not match an underscore.)
+          # ---------------------------------------------------------------------------
+          HOOK_FILES="fs/exec.c fs/open.c fs/stat.c fs/read_write.c drivers/input/input.c drivers/tty/pty.c"
+          echo "== BEFORE: ksu_ lines in hook files =="
+          grep -n 'ksu_' $HOOK_FILES || true
+          perl -pi -e 's/^(\s*#\s*(?:if|ifdef|ifndef|elif)\b.*?)\bCONFIG_KSU\b/$1CONFIG_KSU_TREE_HOOK_DISABLED/' $HOOK_FILES
+          echo "== AFTER: guards still using plain CONFIG_KSU in hook files =="
+          grep -n -E '^\s*#\s*(if|ifdef|ifndef|elif)\b.*\bCONFIG_KSU\b' $HOOK_FILES || echo "(none; all source-tree hooks are disabled)"
+          echo "== Redirected guards =="
+          grep -c 'CONFIG_KSU_TREE_HOOK_DISABLED' $HOOK_FILES || true
+
+      - name: Setup NoMount (v2.1.0)
+        working-directory: kernel_source
+        run: |
+          set -eo pipefail
+          # Fetch the setup script from the same tag as the installed version.
+          curl -fLSs -o /tmp/nomount-setup.sh \
+            "https://raw.githubusercontent.com/maxsteeel/nomount/${NOMOUNT_VERSION}/kernel/setup.sh"
+          sh /tmp/nomount-setup.sh "${NOMOUNT_VERSION}"
+
+          echo "== Installed NoMount version =="
+          git -C NoMount describe --tags --always
+
+          test -L fs/nomount
+          test -f fs/nomount/nomount.c
+          grep -q 'fs/nomount/Kconfig' fs/Kconfig
+          grep -q 'CONFIG_NOMOUNT' fs/Makefile
+
+      - name: Patch panel DTS for MIUI/HyperOS
+        working-directory: kernel_source
+        run: |
+          # Copied from the "Building for MIUI" section of this source tree’s build.sh.
+          D=arch/arm64/boot/dts/vendor/qcom
+          # u <pattern> <file...>: remove the leading "//" comment marker (uncomment the line)
+          u() { p="$1"; shift; for f in "$@"; do sed -i "s|//${p}|${p}|g" "$D/$f"; done; }
+
+          # Panel dimensions
+          sed -i 's/<154>/<1537>/g' $D/dsi-panel-j1s* $D/dsi-panel-j2*
+          sed -i 's/<155>/<1544>/g' $D/dsi-panel-j3s-37-02-0a-dsc-video.dtsi
+          sed -i 's/<155>/<1545>/g' $D/dsi-panel-j11-38-08-0a-fhd-cmd.dtsi
+          sed -i 's/<155>/<1546>/g' $D/dsi-panel-k11a-38-08-0a-dsc-cmd.dtsi $D/dsi-panel-l11r-38-08-0a-dsc-cmd.dtsi
+          sed -i 's/<70>/<695>/g' $D/dsi-panel-j11-38-08-0a-fhd-cmd.dtsi $D/dsi-panel-j3s-37-02-0a-dsc-video.dtsi \
+                                  $D/dsi-panel-k11a-38-08-0a-dsc-cmd.dtsi $D/dsi-panel-l11r-38-08-0a-dsc-cmd.dtsi
+          sed -i 's/<71>/<710>/g' $D/dsi-panel-j1s* $D/dsi-panel-j2*
+
+          # Smart FPS and qsync
+          sed -i 's|// mi,mdss-dsi-pan-enable-smart-fps|mi,mdss-dsi-pan-enable-smart-fps|g' $D/dsi-panel*
+          sed -i 's|// mi,mdss-dsi-smart-fps-max_framerate|mi,mdss-dsi-smart-fps-max_framerate|g' $D/dsi-panel*
+          sed -i 's|// qcom,mdss-dsi-pan-enable-smart-fps|qcom,mdss-dsi-pan-enable-smart-fps|g' $D/dsi-panel*
+          sed -i 's|qcom,mdss-dsi-qsync-min-refresh-rate|//qcom,mdss-dsi-qsync-min-refresh-rate|g' $D/dsi-panel*
+
+          # Refresh rates supported by MIUI
+          sed -i 's/120 90 60/120 90 60 50 30/g' $D/dsi-panel-g7a-36-02-0c-dsc-video.dtsi \
+                 $D/dsi-panel-g7a-37-02-0a-dsc-video.dtsi $D/dsi-panel-g7a-37-02-0b-dsc-video.dtsi
+          sed -i 's/144 120 90 60/144 120 90 60 50 48 30/g' $D/dsi-panel-j3s-37-02-0a-dsc-video.dtsi
+
+          # Brightness controls from the DTSI files
+          u '39 00 00 00 00 00 03 51 03 FF' dsi-panel-j9-38-0a-0a-fhd-video.dtsi
+          u '39 00 00 00 00 00 03 51 0D FF' dsi-panel-j2-p2-1-38-0c-0a-dsc-cmd.dtsi
+          u '39 00 00 00 00 00 05 51 0F 8F 00 00' dsi-panel-j1s-42-02-0a-dsc-cmd.dtsi \
+            dsi-panel-j1s-42-02-0a-mp-dsc-cmd.dtsi dsi-panel-j2-mp-42-02-0b-dsc-cmd.dtsi \
+            dsi-panel-j2-p2-1-42-02-0b-dsc-cmd.dtsi dsi-panel-j2s-mp-42-02-0a-dsc-cmd.dtsi
+          u '39 01 00 00 00 00 03 51 00 00' dsi-panel-j2-38-0c-0a-dsc-cmd.dtsi
+          u '39 01 00 00 00 00 03 51 03 FF' dsi-panel-j11-38-08-0a-fhd-cmd.dtsi dsi-panel-j9-38-0a-0a-fhd-video.dtsi
+          u '39 01 00 00 00 00 03 51 07 FF' dsi-panel-j1u-42-02-0b-dsc-cmd.dtsi \
+            dsi-panel-j2-42-02-0b-dsc-cmd.dtsi dsi-panel-j2-p1-42-02-0b-dsc-cmd.dtsi
+          u '39 01 00 00 00 00 03 51 0F FF' dsi-panel-j1u-42-02-0b-dsc-cmd.dtsi \
+            dsi-panel-j2-42-02-0b-dsc-cmd.dtsi dsi-panel-j2-p1-42-02-0b-dsc-cmd.dtsi
+          u '39 01 00 00 00 00 05 51 07 FF 00 00' dsi-panel-j1s-42-02-0a-dsc-cmd.dtsi \
+            dsi-panel-j1s-42-02-0a-mp-dsc-cmd.dtsi dsi-panel-j2-mp-42-02-0b-dsc-cmd.dtsi \
+            dsi-panel-j2-p2-1-42-02-0b-dsc-cmd.dtsi dsi-panel-j2s-mp-42-02-0a-dsc-cmd.dtsi
+          u '39 01 00 00 01 00 03 51 03 FF' dsi-panel-j11-38-08-0a-fhd-cmd.dtsi
+          u '39 01 00 00 11 00 03 51 03 FF' dsi-panel-j2-p2-1-38-0c-0a-dsc-cmd.dtsi
+
+          git status --short arch/arm64/boot/dts | head -20
+
+      - name: Build kernel (MIUI/HyperOS)
+        working-directory: kernel_source
+        run: |
+          set -o pipefail
+
+          # LOCALVERSION is set but empty: prevents setlocalversion from adding a second "+".
+          export LOCALVERSION=
+
+          MAKE_ARGS="ARCH=arm64 SUBARCH=arm64 O=out CC=clang \
+            CROSS_COMPILE=aarch64-linux-gnu- CROSS_COMPILE_ARM32=arm-linux-gnueabi- \
+            CROSS_COMPILE_COMPAT=arm-linux-gnueabi- CLANG_TRIPLE=aarch64-linux-gnu-"
+
+          make $MAKE_ARGS ${DEVICE}_defconfig 2>&1 | tee ../build.log
+
+          # --- MIUI options (matching this source tree’s build.sh) ---
+          scripts/config --file out/.config \
+            --set-str STATIC_USERMODEHELPER_PATH /system/bin/micd \
+            -e PERF_CRITICAL_RT_TASK -e SF_BINDER -e OVERLAY_FS -d DEBUG_FS \
+            -e MIGT -e MIGT_ENERGY_MODEL -e MIHW -e PACKAGE_RUNTIME_INFO \
+            -e BINDER_OPT -e KPERFEVENTS -e MILLET -e PERF_HUMANTASK \
+            -d LTO_CLANG -d LOCALVERSION_AUTO -e XIAOMI_MIUI -d MI_MEMORY_SYSFS \
+            -e TASK_DELAY_ACCT -e MIUI_ZRAM_MEMORY_TRACKING \
+            -d CONFIG_MODULE_SIG_SHA512 -d CONFIG_MODULE_SIG_HASH \
+            -e MI_FRAGMENTION -e PERF_HELPER -e BOOTUP_RECLAIM -e MI_RECLAIM -e RTMM
+
+          # --- Kernel version string: 4.19.325-NKR-Munch ---
+          # The "+" is included directly in the name, so the result is always 4.19.325-NKR-Munch+.
+          # (It does not depend on Git status.) LOCALVERSION_AUTO is disabled to prevent a Git hash from being added.
+          scripts/config --file out/.config \
+            --set-str LOCALVERSION "${KERNEL_LOCALVERSION}" -d LOCALVERSION_AUTO
+
+          # --- Networking: options used by Android 14 netd / ConnectivityService ---
+          # Without BPF cgroups/xt_bpf, sock_diag (INET_DIAG_DESTROY), and MSS clamping,
+          # Wi-Fi may appear connected while apps cannot load, even though mobile data works normally.
+          # Options unsupported by this source tree are automatically discarded by olddefconfig.
+          scripts/config --file out/.config \
+            -e NET -e INET -e IPV6 \
+            -e BPF_SYSCALL -e BPF_JIT -e CGROUP_BPF \
+            -e NET_CLS_BPF -e NET_ACT_BPF -e NET_CLS_ACT -e NET_SCH_INGRESS \
+            -e NETFILTER_XT_MATCH_BPF -e NETFILTER_XT_MATCH_OWNER \
+            -e NETFILTER_XT_TARGET_TCPMSS -e NETFILTER_XT_MATCH_TCPMSS \
+            -e INET_DIAG -e INET_UDP_DIAG -e INET_DIAG_DESTROY \
+            -e IP6_NF_IPTABLES -e IP6_NF_FILTER -e IP6_NF_MANGLE -e IP6_NF_NAT
+
+          # --- Kernel logs: restrict dmesg access to root ---
+          # The "avc: denied" messages are also recorded in the kernel log. This option sets dmesg_restrict=1
+          # at boot, preventing regular apps from reading the kernel log.
+          # CONFIG_AUDIT is intentionally NOT disabled: SELinux depends on it.
+          scripts/config --file out/.config -e SECURITY_DMESG_RESTRICT
+
+          # --- KernelSU (backslashxx) + NoMount ---
+          scripts/config --file out/.config -e KSU -e KALLSYMS -e NOMOUNT
+          if grep -q 'KSU_MANUAL_HOOK' drivers/kernelsu/Kconfig 2>/dev/null; then
+            scripts/config --file out/.config -e KSU_MANUAL_HOOK
+          fi
+          # Sucompat uses inline call-site hijacking (per the backslashxx guide for ARM64 4.19+).
+          # The source tree’s built-in manual hooks were disabled in the KernelSU setup step.
+          scripts/config --file out/.config -e KSU_HACK_ARM64_BRANCH_LINK
+
+          make $MAKE_ARGS olddefconfig 2>&1 | tee -a ../build.log
+
+          # Verify that each option is enabled (Kconfig discards unknown options).
+          MISSING=0
+          for opt in CONFIG_KSU CONFIG_KSU_HACK_ARM64_BRANCH_LINK CONFIG_NOMOUNT CONFIG_KALLSYMS CONFIG_SECURITY_SELINUX CONFIG_XIAOMI_MIUI; do
+            if grep -q "^${opt}=y" out/.config; then
+              echo "OK      ${opt}=y"
+            else
+              echo "MISSING ${opt}  (not enabled in out/.config)"
+              MISSING=1
+            fi
+          done
+          if [ "$MISSING" -ne 0 ]; then
+            echo "::error::A required kernel option is disabled; see the MISSING entries above."
+            exit 1
+          fi
+          grep -E '^CONFIG_KSU' out/.config || true
+
+          # Informational only (does not fail the build): final network option status.
+          echo "== Network options in out/.config =="
+          for opt in CONFIG_BPF_SYSCALL CONFIG_BPF_JIT CONFIG_CGROUP_BPF CONFIG_NET_CLS_BPF \
+                     CONFIG_NETFILTER_XT_MATCH_BPF CONFIG_NETFILTER_XT_MATCH_OWNER \
+                     CONFIG_NETFILTER_XT_TARGET_TCPMSS CONFIG_INET_DIAG CONFIG_INET_UDP_DIAG \
+                     CONFIG_INET_DIAG_DESTROY CONFIG_IPV6; do
+            if grep -q "^${opt}=y" out/.config; then echo "OK      ${opt}"; else echo "MISSING ${opt}"; fi
+          done
+          grep -E '^CONFIG_LOCALVERSION' out/.config || true
+          echo "== Logging/audit options in out/.config =="
+          grep -E '^CONFIG_(AUDIT|AUDITSYSCALL|SECURITY_DMESG_RESTRICT|SECURITY_SELINUX)=' out/.config || true
+          # Informational only: display symbol names vary between source trees, so they are not required.
+          echo "== Display options in out/.config =="
+          grep -E '^CONFIG_(DRM|MSM_SDE|MSM_DSI|DRM_MSM|FB_MSM|MSM_)[A-Z0-9_]*=' out/.config | head -40 || true
+
+          make $MAKE_ARGS -j"$(nproc)" 2>&1 | tee -a ../build.log
+
+          test -f out/arch/arm64/boot/Image
+          REL="$(cat out/include/config/kernel.release)"
+          echo "Kernel version: ${REL}"
+          case "${REL}" in
+            *"${KERNEL_LOCALVERSION}") echo "OK kernel name: ${REL}" ;;
+            *) echo "::error::Kernel name does not match: ${REL}"; exit 1 ;;
+          esac
+          echo "Generating dtb..."
+          find out/arch/arm64/boot/dts -name '*.dtb' -exec cat {} + > out/arch/arm64/boot/dtb
+          ls -la out/arch/arm64/boot/Image out/arch/arm64/boot/dtb
+          strings out/arch/arm64/boot/Image | grep -m1 'Linux version' || true
+
+      - name: Error summary (if the build fails)
+        if: failure()
+        run: |
+          test -f build.log || exit 0
+          echo "== First 40 errors =="
+          grep -n -E 'error:|undefined symbol|\*\*\* ' build.log | head -40 || true
+          if grep -q -E "undefined (symbol|reference).*ksu_" build.log; then
+            echo "::error::The source tree still contains built-in KernelSU hooks that are incompatible with this KernelSU version (see the undefined reference list)."
+          fi
+          if grep -q "cannot be used against symbol '__crc_" build.log; then
+            echo "::error::genksyms failed to assign a version to an EXPORT symbol (look for 'version generation failed')."
+          fi
+          grep -n "version generation failed" build.log | head -10 || true
+
+      - name: Package AnyKernel3
+        run: |
+          set -eo pipefail
+          # This source tree’s AnyKernel3 fork (kona branch) reads kernels/Image and kernels/dtb.
+          # The ZIP does not include dtbo.img; the stock dtbo partition is left unchanged.
+          git clone --depth=1 -b kona --single-branch https://github.com/NKRLabs/AnyKernel3 anykernel
+          rm -rf anykernel/kernels
+          mkdir -p anykernel/kernels
+          cp kernel_source/out/arch/arm64/boot/Image anykernel/kernels/
+          cp kernel_source/out/arch/arm64/boot/dtb anykernel/kernels/
+
+          # The text shown in TWRP comes from the AnyKernel3 fork’s anykernel.sh (it is static),
+          # not from the build output. Update it to match this kernel (display text only).
+          REL="$(cat kernel_source/out/include/config/kernel.release)"
+          sed -i "s|^kernel.string=.*|kernel.string=${REL} (HyperOS) by NKR00711|" anykernel/anykernel.sh
+          sed -i '/ui_print/ s/AOSP/HyperOS/g' anykernel/anykernel.sh
+          echo "== Text in anykernel.sh (kernel.string / ui_print / aosp) =="
+          grep -n -i -E 'kernel\.string|ui_print|aosp|hyperos|miui' anykernel/anykernel.sh || true
+
+          cd anykernel
+          zip -r9 ../Kernel-POCO-F4-munch-HyperOS.zip ./* -x .git .gitignore out/ ./*.zip
+
+      - name: Upload kernel artifact
+        uses: actions/upload-artifact@v4
+        with:
+          name: Kernel-POCO-F4-munch-HyperOS
+          path: Kernel-POCO-F4-munch-HyperOS.zip
+          if-no-files-found: error
+
+      - name: Publish to GitHub Release (direct download, no nested ZIP)
+        continue-on-error: true
+        env:
+          GH_TOKEN: ${{ github.token }}
+        run: |
+          TAG="munch-hyperos-${{ github.run_number }}"
+          gh release create "$TAG" Kernel-POCO-F4-munch-HyperOS.zip \
+            --repo "${{ github.repository }}" \
+            --target "${{ github.sha }}" \
+            --prerelease \
+            --title "POCO F4 munch HyperOS kernel #${{ github.run_number }}" \
+            --notes "Kernel 4.19.325 (MIUI/HyperOS variant) + KernelSU backslashxx + NoMount ${NOMOUNT_VERSION}. Not tested on every HyperOS build; back up the stock boot image before flashing."
+          echo "Release: https://github.com/${{ github.repository }}/releases/tag/$TAG"
+
+      - name: Upload build log (if the build fails)
+        if: failure()
+        uses: actions/upload-artifact@v4
+        with:
+          name: build-log
+          path: |
+            build.log
+            kernel_source/out/.config
+          include-hidden-files: true
+          if-no-files-found: ignore
