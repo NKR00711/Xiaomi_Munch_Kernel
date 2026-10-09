@@ -127,42 +127,42 @@ jobs:
           # Manager apps are recognized without "Failed to update App Profile" errors.
           # ---------------------------------------------------------------------------
           python3 -c '
-import os
-candidates = [
-    "drivers/kernelsu/kernel/manager/apk_sign.c",
-    "drivers/kernelsu/manager/apk_sign.c",
-    "drivers/kernelsu/apk_sign.c",
-]
-apk_sign_path = next((p for p in candidates if os.path.exists(p)), None)
-if apk_sign_path:
-    with open(apk_sign_path, "r") as f:
-        content = f.read()
-    hook_target = "return check_v2_signature(path, signature_index);"
-    hook_replacement = """// Bulletproof Fallback: check known manager package names
-    if (check_v2_signature(path, signature_index))
-        return true;
-    char pkg_buf[128];
-    if (get_pkg_from_apk_path(pkg_buf, path) == 0) {
-        if (!strcmp(pkg_buf, "me.weishu.kernelsu") ||
-            !strcmp(pkg_buf, "org.resukisu.resukisu") ||
-            !strcmp(pkg_buf, "org.bakasu.bakasu") ||
-            !strcmp(pkg_buf, "com.sukisu.ultra") ||
-            !strcmp(pkg_buf, "com.kowx712.supermanager") ||
-            !strcmp(pkg_buf, "com.resukisu")) {
-            pr_info("PROJECT: Manager recognized by known package name: %s\\n", pkg_buf);
-            *signature_index = 0;
-            return true;
-        }
-    }
-    return false;"""
-    if hook_target in content and "pkg_buf" not in content:
-        content = content.replace(hook_target, hook_replacement)
-        with open(apk_sign_path, "w") as f:
-            f.write(content)
-        print("✅ Patched " + apk_sign_path + " with universal manager package verification")
-    else:
-        print("ℹ️ " + apk_sign_path + " already patched or target signature pattern handled")
-' 2>/dev/null || true
+          import os
+          candidates = [
+              "drivers/kernelsu/kernel/manager/apk_sign.c",
+              "drivers/kernelsu/manager/apk_sign.c",
+              "drivers/kernelsu/apk_sign.c",
+          ]
+          apk_sign_path = next((p for p in candidates if os.path.exists(p)), None)
+          if apk_sign_path:
+              with open(apk_sign_path, "r") as f:
+                  content = f.read()
+              hook_target = "return check_v2_signature(path, signature_index);"
+              hook_replacement = """// Bulletproof Fallback: check known manager package names
+              if (check_v2_signature(path, signature_index))
+                  return true;
+              char pkg_buf[128];
+              if (get_pkg_from_apk_path(pkg_buf, path) == 0) {
+                  if (!strcmp(pkg_buf, "me.weishu.kernelsu") ||
+                      !strcmp(pkg_buf, "org.resukisu.resukisu") ||
+                      !strcmp(pkg_buf, "org.bakasu.bakasu") ||
+                      !strcmp(pkg_buf, "com.sukisu.ultra") ||
+                      !strcmp(pkg_buf, "com.kowx712.supermanager") ||
+                      !strcmp(pkg_buf, "com.resukisu")) {
+                      pr_info("PROJECT: Manager recognized by known package name: %s\\n", pkg_buf);
+                      *signature_index = 0;
+                      return true;
+                  }
+              }
+              return false;"""
+              if hook_target in content and "pkg_buf" not in content:
+                  content = content.replace(hook_target, hook_replacement)
+                  with open(apk_sign_path, "w") as f:
+                      f.write(content)
+                  print("✅ Patched " + apk_sign_path + " with universal manager package verification")
+              else:
+                  print("ℹ️ " + apk_sign_path + " already patched or target signature pattern handled")
+          ' 2>/dev/null || true
 
           # Inject base KSU symbols into defconfig (mirrors the working bash recipe)
           for sym in KSU KSU_SUSFS KSU_MULTI_MANAGER_SUPPORT THREAD_INFO_IN_TASK; do
