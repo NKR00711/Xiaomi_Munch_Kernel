@@ -73,10 +73,10 @@ jobs:
         working-directory: kernel_source
         run: |
           set -eo pipefail
-          echo "[*] Injecting SukiSU-Ultra (KOWX712/KernelSU) with SuSFS..."
+          echo "[*] Injecting ReSukiSU-Ultra with SuSFS..."
           curl -fLSs -o /tmp/ksu-setup.sh \
-            "https://raw.githubusercontent.com/KOWX712/KernelSU/master/kernel/setup.sh"
-          bash /tmp/ksu-setup.sh
+            "https://raw.githubusercontent.com/ReSukiSU/ReSukiSU/main/kernel/setup.sh"
+          bash /tmp/ksu-setup.sh v4.2.0-rc3
 
           echo "== Installed KernelSU version =="
           git -C KernelSU describe --tags --always || true
