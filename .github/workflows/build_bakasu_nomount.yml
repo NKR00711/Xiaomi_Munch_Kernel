@@ -69,14 +69,47 @@ jobs:
           test -f "kernel_source/arch/arm64/configs/${DEVICE}_defconfig"
           test -d kernel_source/techpack/display
 
+          echo "[*] Initializing submodules (if any) to avoid broken gitlink issues."
+          git -C kernel_source submodule sync --recursive || true
+          git -C kernel_source submodule update --init --recursive || true
+          git -C kernel_source submodule status --recursive || true
+
       - name: Setup KernelSU (KOWX712/SukiSU-Ultra)
         working-directory: kernel_source
         run: |
           set -eo pipefail
+
           echo "[*] Injecting ReSukiSU-Ultra with SuSFS..."
           curl -fLSs -o /tmp/ksu-setup.sh \
             "https://raw.githubusercontent.com/Baka-SU/BakaSU/main/kernel/setup.sh"
-          bash /tmp/ksu-setup.sh
+
+          # The upstream script may fail when it tries to force-checkout "main"
+          # in a repo whose HEAD is not main or where the ref is absent.
+          # Fall back to a deterministic clone if that happens.
+          if bash /tmp/ksu-setup.sh; then
+            echo "[+] KernelSU setup script completed successfully."
+          else
+            echo "[!] KernelSU setup script failed; falling back to a pinned KernelSU checkout."
+            rm -rf KernelSU
+            git clone --depth=1 https://github.com/Baka-SU/BakaSU KernelSU || git clone https://github.com/Baka-SU/BakaSU KernelSU
+            git -C KernelSU remote show origin | sed -n '/HEAD branch/s/.*: //p' || true
+
+            # Prefer repo default branch, but fall back to known-good commit if needed.
+            DEFAULT_BRANCH="$(git -C KernelSU remote show origin | sed -n '/HEAD branch/s/.*: //p' || true)"
+            if [ -n "$DEFAULT_BRANCH" ]; then
+              git -C KernelSU checkout "$DEFAULT_BRANCH" || true
+            else
+              git -C KernelSU checkout main || true
+            fi
+
+            # Pin to the commit that was known-good in your logs.
+            git -C KernelSU fetch --depth=1 origin 460d80574 || true
+            git -C KernelSU checkout 460d80574 || true
+
+            rm -rf drivers/kernelsu
+            ln -s ../KernelSU/kernel drivers/kernelsu
+            echo "[+] Fallback KernelSU clone + symlink created."
+          fi
 
           echo "== Installed KernelSU version =="
           git -C KernelSU describe --tags --always || true
@@ -103,7 +136,7 @@ jobs:
           # ---------------------------------------------------------------------------
           python3 -c '
           import os
-          
+
           candidates = [
               "drivers/kernelsu/kernel/manager/apk_sign.c",
               "drivers/kernelsu/manager/apk_sign.c",
@@ -113,7 +146,7 @@ jobs:
           if apk_sign_path:
               with open(apk_sign_path, "r") as f:
                   content = f.read()
-          
+
               hook_target = "return check_v2_signature(path, signature_index);"
               hook_replacement = """// Bulletproof Fallback: check known manager package names
               if (check_v2_signature(path, signature_index))
@@ -126,7 +159,7 @@ jobs:
                       !strcmp(pkg_buf, "com.sukisu.ultra") ||
                       !strcmp(pkg_buf, "com.kowx712.supermanager") ||
                       !strcmp(pkg_buf, "com.resukisu")) {
-                      pr_info("PROJECT: Manager recognized by known package name: %s\\n", pkg_buf);
+                      pr_info("PROJECT: Manager recognized by known package name: %s\n", pkg_buf);
                       *signature_index = 0;
                       return true;
                   }
@@ -168,7 +201,6 @@ jobs:
         working-directory: kernel_source
         run: |
           set -eo pipefail
-          # Fetch the setup script from the same tag as the installed version.
           curl -fLSs -o /tmp/nomount-setup.sh \
             "https://raw.githubusercontent.com/maxsteeel/nomount/${NOMOUNT_VERSION}/kernel/setup.sh"
           sh /tmp/nomount-setup.sh "${NOMOUNT_VERSION}"
@@ -184,9 +216,7 @@ jobs:
       - name: Patch panel DTS for MIUI/HyperOS
         working-directory: kernel_source
         run: |
-          # Copied from the "Building for MIUI" section of this source tree’s build.sh.
           D=arch/arm64/boot/dts/vendor/qcom
-          # u <pattern> <file...>: remove the leading "//" comment marker (uncomment the line)
           u() { p="$1"; shift; for f in "$@"; do sed -i "s|//${p}|${p}|g" "$D/$f"; done; }
 
           # Panel dimensions
@@ -288,7 +318,7 @@ jobs:
             -d KSU_TRACEPOINT_HOOK \
             -e KSU_THRONE_TRACKER_ALWAYS_THREADED \
             -d KSU_ALLOWLIST_WORKAROUND \
-            -e KSU_LSM_SECURITY_HOOKS
+            -e KSU_LSM_SECURITY_HOOKS \
             -d KSU_MANUAL_HOOK \
             -e KSU_SUSFS \
             -e KSU_SUSFS_SUS_PATH \
@@ -381,16 +411,12 @@ jobs:
       - name: Package AnyKernel3
         run: |
           set -eo pipefail
-          # This source tree’s AnyKernel3 fork (kona branch) reads kernels/Image and kernels/dtb.
-          # The ZIP does not include dtbo.img; the stock dtbo partition is left unchanged.
           git clone --depth=1 -b kona --single-branch https://github.com/NKRLabs/AnyKernel3 anykernel
           rm -rf anykernel/kernels
           mkdir -p anykernel/kernels
           cp kernel_source/out/arch/arm64/boot/Image anykernel/kernels/
           cp kernel_source/out/arch/arm64/boot/dtb anykernel/kernels/
 
-          # The text shown in TWRP comes from the AnyKernel3 fork’s anykernel.sh (it is static),
-          # not from the build output. Update it to match this kernel (display text only).
           REL="$(cat kernel_source/out/include/config/kernel.release)"
           sed -i "s|^kernel.string=.*|kernel.string=${REL} (HyperOS) by NKR00711|" anykernel/anykernel.sh
           sed -i '/ui_print/ s/AOSP/HyperOS/g' anykernel/anykernel.sh
