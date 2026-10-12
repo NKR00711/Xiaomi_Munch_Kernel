@@ -21,7 +21,7 @@ env:
   KERNEL_LOCALVERSION: "-NKR-Munch+"   # (uname -r / KernelSU)
   TZ: Asia/Jakarta
   NOMOUNT_VERSION: v2.1.0
-  KERNEL_REPO: https://github.com/NKRLabs/kernel_xiaomi_sm8250_mod
+  KERNEL_REPO: https://github.com/Luckyfr1945/kernel_xiaomi_sm8250_mod
   KERNEL_BRANCH: android15-lineage22-mod
   DEVICE: munch
 
@@ -283,22 +283,30 @@ jobs:
           echo "[*] Injecting Full RKSU / ReSukiSU + SuSFS v2.3.0 Configuration into .config..."
           scripts/config --file out/.config \
             -e KSU \
-            -e KSU_SUSFS \
+            -d KSU_KPROBES_HOOK \
+            -d KSU_DEBUG \
             -d KSU_TRACEPOINT_HOOK \
+            -e KSU_THRONE_TRACKER_ALWAYS_THREADED \
+            -d KSU_ALLOWLIST_WORKAROUND \
+            -e KSU_LSM_SECURITY_HOOKS
             -d KSU_MANUAL_HOOK \
-            -e KSU_MULTI_MANAGER_SUPPORT \
-            -e THREAD_INFO_IN_TASK \
+            -e KSU_SUSFS \
             -e KSU_SUSFS_SUS_PATH \
+            -e KSU_SUSFS_SUS_MAP \
             -e KSU_SUSFS_SUS_MOUNT \
+            -e KSU_SUSFS_AUTO_ADD_SUS_KSU_DEFAULT_MOUNT \
+            -e KSU_SUSFS_AUTO_ADD_SUS_BIND_MOUNT \
             -e KSU_SUSFS_SUS_KSTAT \
+            -e KSU_SUSFS_TRY_UMOUNT \
+            -e KSU_SUSFS_AUTO_ADD_TRY_UMOUNT_FOR_BIND_MOUNT \
             -e KSU_SUSFS_SPOOF_UNAME \
             -e KSU_SUSFS_ENABLE_LOG \
             -e KSU_SUSFS_HIDE_KSU_SUSFS_SYMBOLS \
             -e KSU_SUSFS_SPOOF_CMDLINE_OR_BOOTCONFIG \
             -e KSU_SUSFS_OPEN_REDIRECT \
-            -e KSU_SUSFS_SUS_MAP \
-            -d KSU_DISABLE_MANAGER \
-            -d KSU_DISABLE_POLICY
+            -d KSU_SUSFS_SUS_SU \
+            -e KSU_SUSFS_HAS_MAGIC_MOUNT \
+            -e KSU_SUSFS_SUS_OVERLAYFS
 
           scripts/config --file out/.config -e KALLSYMS -e NOMOUNT
 
