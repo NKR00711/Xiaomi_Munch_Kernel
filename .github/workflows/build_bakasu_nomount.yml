@@ -76,7 +76,7 @@ jobs:
           echo "[*] Injecting ReSukiSU-Ultra with SuSFS..."
           curl -fLSs -o /tmp/ksu-setup.sh \
             "https://raw.githubusercontent.com/Baka-SU/BakaSU/main/kernel/setup.sh"
-          bash /tmp/ksu-setup.sh v4.2.0-rc3
+          bash /tmp/ksu-setup.sh
 
           echo "== Installed KernelSU version =="
           git -C KernelSU describe --tags --always || true
