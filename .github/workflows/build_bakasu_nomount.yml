@@ -18,6 +18,7 @@ env:
   NOMOUNT_VERSION: v2.1.0
   KERNEL_REPO: https://github.com/Luckyfr1945/kernel_xiaomi_sm8250_mod
   KERNEL_BRANCH: android15-lineage22-mod
+  KSU_REPO: https://github.com/Baka-SU/BakaSU
   DEVICE: munch
 
 jobs:
@@ -45,8 +46,7 @@ jobs:
           set -eo pipefail
           mkdir -p "$HOME/proton-clang"
           cd "$HOME/proton-clang"
-          wget -q https://github.com/kdrag0n/clang/archive/refs/tags/20210522.zip || \
-            wget -q https://github.com/kdrag0n/proton-clang/archive/refs/tags/20210522.zip
+          wget -q https://github.com/kdrag0n/proton-clang/archive/refs/tags/20210522.zip
           unzip -q 20210522.zip
           rm -f 20210522.zip
           TC="$HOME/proton-clang/proton-clang-20210522/bin"
@@ -56,36 +56,57 @@ jobs:
           aarch64-linux-gnu-ld --version | head -1
           arm-linux-gnueabi-ld --version | head -1
 
-      - name: Clone kernel source
+      - name: Clone kernel source (no submodules)
         run: |
           set -eo pipefail
-          git clone --depth=1 --recurse-submodules -b "$KERNEL_BRANCH" "$KERNEL_REPO" kernel_source
+          # NOTE: --recurse-submodules is intentionally NOT used.
+          # The repo has a broken gitlink for 'KernelSU' with no .gitmodules
+          # mapping, so Git cannot resolve it. KernelSU is cloned manually
+          # in the next step.
+          git clone --depth=1 -b "$KERNEL_BRANCH" "$KERNEL_REPO" kernel_source
           git -C kernel_source log -1 --format='Source: %h %s'
           grep -E '^(VERSION|PATCHLEVEL|SUBLEVEL) ' kernel_source/Makefile
           test -f "kernel_source/arch/arm64/configs/${DEVICE}_defconfig"
           test -d kernel_source/techpack/display
 
-          echo "[*] Initializing submodules (if any) to avoid broken gitlink issues."
-          git -C kernel_source submodule sync --recursive || true
-          git -C kernel_source submodule update --init --recursive || true
-          git -C kernel_source submodule status --recursive || true
+          echo "[*] Cleaning up broken KernelSU gitlink entry (if any)."
+          rm -rf kernel_source/KernelSU
 
-          echo "[*] Verifying KernelSU sources are already present in the tree."
-          test -d kernel_source/drivers/kernelsu || { echo "::error::drivers/kernelsu missing from repo"; exit 1; }
-          test -f kernel_source/drivers/kernelsu/Kconfig
-          test -f kernel_source/drivers/kernelsu/Makefile
+      - name: Setup KernelSU (BakaSU)
+        working-directory: kernel_source
+        run: |
+          set -eo pipefail
+
+          echo "[*] Cloning KernelSU (BakaSU) into KernelSU/ ..."
+          git clone --depth=1 "$KSU_REPO" KernelSU
+
+          echo "== Installed KernelSU version =="
+          git -C KernelSU describe --tags --always || true
+          git -C KernelSU log -1 --format='%h %s' || true
+
+          echo "[*] Wiring drivers/kernelsu -> ../KernelSU/kernel symlink"
+          rm -rf drivers/kernelsu
+          ln -s ../KernelSU/kernel drivers/kernelsu
+
+          test -L drivers/kernelsu
+          test -f drivers/kernelsu/Kconfig
+          test -f drivers/kernelsu/Makefile
+
+          echo "[*] Ensuring drivers/Kconfig and drivers/Makefile reference KernelSU."
+          grep -q 'drivers/kernelsu/Kconfig' drivers/Kconfig \
+            || echo 'source "drivers/kernelsu/Kconfig"' >> drivers/Kconfig
+          grep -qE '^obj-\$\(CONFIG_KSU\)|kernelsu' drivers/Makefile \
+            || echo 'obj-$(CONFIG_KSU) += kernelsu/' >> drivers/Makefile
+
+          grep -q 'drivers/kernelsu/Kconfig' drivers/Kconfig
+          grep -q 'CONFIG_KSU' drivers/Makefile
+          echo "[+] KernelSU setup finished."
 
       - name: Patch multi-manager support (KernelSU apk_sign)
         working-directory: kernel_source
         run: |
           set -eo pipefail
 
-          # ---------------------------------------------------------------------------
-          # Universal Fallback Key Injection for multiple managers:
-          # RKSU, Official KernelSU, ReSukiSU, SukiSU-Ultra and BakaSU.
-          # This makes the kernel accept any of those manager APKs without
-          # "Failed to update App Profile" errors.
-          # ---------------------------------------------------------------------------
           python3 -c '
           import os
 
@@ -129,7 +150,6 @@ jobs:
               print("[!] apk_sign.c not found, multi-manager fallback will not be applied")
           '
 
-          # Sanity check
           grep -R "get_pkg_from_apk_path" drivers/kernelsu 2>/dev/null | head -3 || true
 
       - name: Setup NoMount (v2.1.0)
@@ -225,8 +245,7 @@ jobs:
             -e INET_DIAG -e INET_UDP_DIAG -e INET_DIAG_DESTROY \
             -e IP6_NF_IPTABLES -e IP6_NF_FILTER -e IP6_NF_MANGLE -e IP6_NF_NAT
 
-          # --- ReSukiSU / RKSU + SuSFS v2.3.0 + NoMount + Multi-Manager ---
-          echo "[*] Applying RKSU / ReSukiSU + SuSFS v2.3.0 + NoMount + Multi-Manager configuration into .config..."
+          echo "[*] Applying RKSU / ReSukiSU + SuSFS + NoMount + Multi-Manager configuration..."
           scripts/config --file out/.config \
             -e KSU \
             -d KSU_KPROBES_HOOK \
@@ -260,8 +279,7 @@ jobs:
           make $MAKE_ARGS olddefconfig 2>&1 | tee -a ../build.log
 
           MISSING=0
-          for opt in CONFIG_KSU CONFIG_KSU_MULTI_MANAGER_SUPPORT CONFIG_KSU_SUSFS \
-                     CONFIG_THREAD_INFO_IN_TASK \
+          for opt in CONFIG_KSU CONFIG_KSU_SUSFS CONFIG_THREAD_INFO_IN_TASK \
                      CONFIG_KSU_SUSFS_SUS_PATH CONFIG_KSU_SUSFS_SUS_MOUNT \
                      CONFIG_KSU_SUSFS_SUS_KSTAT CONFIG_KSU_SUSFS_SPOOF_UNAME \
                      CONFIG_KSU_SUSFS_HIDE_KSU_SUSFS_SYMBOLS \
@@ -275,6 +293,20 @@ jobs:
               MISSING=1
             fi
           done
+
+          # KSU_MULTI_MANAGER_SUPPORT is optional: only fail if the symbol
+          # exists in Kconfig but got dropped.
+          if grep -q 'KSU_MULTI_MANAGER_SUPPORT' drivers/kernelsu/Kconfig 2>/dev/null; then
+            if grep -q '^CONFIG_KSU_MULTI_MANAGER_SUPPORT=y' out/.config; then
+              echo "OK      CONFIG_KSU_MULTI_MANAGER_SUPPORT=y"
+            else
+              echo "MISSING CONFIG_KSU_MULTI_MANAGER_SUPPORT (declared in Kconfig but not set)"
+              MISSING=1
+            fi
+          else
+            echo "[i] KSU_MULTI_MANAGER_SUPPORT not declared in Kconfig; skipping check"
+          fi
+
           if [ "$MISSING" -ne 0 ]; then
             echo "::error::A required kernel option is disabled; see the MISSING entries above."
             exit 1
@@ -325,7 +357,7 @@ jobs:
           path: Kernel-POCO-F4-munch-HyperOS.zip
           if-no-files-found: error
 
-      - name: Publish to GitHub Release (direct download, no nested ZIP)
+      - name: Publish to GitHub Release
         continue-on-error: true
         env:
           GH_TOKEN: ${{ github.token }}
@@ -336,7 +368,7 @@ jobs:
             --target "${{ github.sha }}" \
             --prerelease \
             --title "POCO F4 munch HyperOS kernel #${{ github.run_number }}" \
-            --notes "Kernel 4.19.325 (MIUI/HyperOS variant) + KernelSU (multi-manager) + NoMount ${NOMOUNT_VERSION}."
+            --notes "Kernel 4.19.325 (MIUI/HyperOS) + KernelSU (multi-manager) + NoMount ${NOMOUNT_VERSION}."
           echo "Release: https://github.com/${{ github.repository }}/releases/tag/$TAG"
 
       - name: Upload build log (if the build fails)
