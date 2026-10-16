@@ -63,7 +63,7 @@ jobs:
       - name: Clone kernel source
         run: |
           set -eo pipefail
-          git clone --depth=1 -b "$KERNEL_BRANCH" "$KERNEL_REPO" kernel_source
+          git clone --depth=1 --recurse-submodules -b "$KERNEL_BRANCH" "$KERNEL_REPO" kernel_source
           git -C kernel_source log -1 --format='Source: %h %s'
           grep -E '^(VERSION|PATCHLEVEL|SUBLEVEL) ' kernel_source/Makefile
           test -f "kernel_source/arch/arm64/configs/${DEVICE}_defconfig"
