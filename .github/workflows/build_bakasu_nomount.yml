@@ -86,7 +86,7 @@ jobs:
           # The upstream script may fail when it tries to force-checkout "main"
           # in a repo whose HEAD is not main or where the ref is absent.
           # Fall back to a deterministic clone if that happens.
-          if bash /tmp/ksu-setup.sh; then
+          if bash /tmp/ksu-setup.sh --submodule; then
             echo "[+] KernelSU setup script completed successfully."
           else
             echo "[!] KernelSU setup script failed; falling back to a pinned KernelSU checkout."
