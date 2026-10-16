@@ -1,24 +1,19 @@
 name: Build Kernel POCO F4 (munch) HyperOS - BakaSU (ReSukiSU) + NoMount v2.1.0
 
-# Based on NKRLabs/kernel_xiaomi_sm8250_mod (branch android15-lineage22-mod)
-# MIUI/HyperOS variant. The build recipe follows this source tree’s build.sh
-# (Proton Clang 20210522 toolchain, munch_defconfig, MIUI flags, and panel DTS patches).
-# The AOSP variant is NOT used: HyperOS has different display drivers, which would result in a black screen.
-
 on:
   workflow_dispatch:
 
 permissions:
-  contents: write   # Required to create a GitHub Release
+  contents: write
 
 env:
-  FORCE_JAVASCRIPT_ACTIONS_TO_NODE24: "true"   # Suppress the Node.js 20 warning for upload-artifact
+  FORCE_JAVASCRIPT_ACTIONS_TO_NODE24: "true"
   ARCH: arm64
   SUBARCH: arm64
   KBUILD_BUILD_USER: NKR00711
   KBUILD_BUILD_HOST: github-actions
   KBUILD_BUILD_TIMESTAMP: "Wed Apr 9 13:36:00 UTC 2025"
-  KERNEL_LOCALVERSION: "-NKR-Munch+"   # (uname -r / KernelSU)
+  KERNEL_LOCALVERSION: "-NKR-Munch+"
   TZ: Asia/Jakarta
   NOMOUNT_VERSION: v2.1.0
   KERNEL_REPO: https://github.com/Luckyfr1945/kernel_xiaomi_sm8250_mod
@@ -50,7 +45,8 @@ jobs:
           set -eo pipefail
           mkdir -p "$HOME/proton-clang"
           cd "$HOME/proton-clang"
-          wget -q https://github.com/kdrag0n/proton-clang/archive/refs/tags/20210522.zip
+          wget -q https://github.com/kdrag0n/clang/archive/refs/tags/20210522.zip || \
+            wget -q https://github.com/kdrag0n/proton-clang/archive/refs/tags/20210522.zip
           unzip -q 20210522.zip
           rm -f 20210522.zip
           TC="$HOME/proton-clang/proton-clang-20210522/bin"
@@ -74,65 +70,21 @@ jobs:
           git -C kernel_source submodule update --init --recursive || true
           git -C kernel_source submodule status --recursive || true
 
-      - name: Setup KernelSU (KOWX712/SukiSU-Ultra)
+          echo "[*] Verifying KernelSU sources are already present in the tree."
+          test -d kernel_source/drivers/kernelsu || { echo "::error::drivers/kernelsu missing from repo"; exit 1; }
+          test -f kernel_source/drivers/kernelsu/Kconfig
+          test -f kernel_source/drivers/kernelsu/Makefile
+
+      - name: Patch multi-manager support (KernelSU apk_sign)
         working-directory: kernel_source
         run: |
           set -eo pipefail
 
-          echo "[*] Injecting ReSukiSU-Ultra with SuSFS..."
-          curl -fLSs -o /tmp/ksu-setup.sh \
-            "https://raw.githubusercontent.com/Baka-SU/BakaSU/main/kernel/setup.sh"
-
-          # The upstream script may fail when it tries to force-checkout "main"
-          # in a repo whose HEAD is not main or where the ref is absent.
-          # Fall back to a deterministic clone if that happens.
-          if bash /tmp/ksu-setup.sh --submodule; then
-            echo "[+] KernelSU setup script completed successfully."
-          else
-            echo "[!] KernelSU setup script failed; falling back to a pinned KernelSU checkout."
-            rm -rf KernelSU
-            git clone --depth=1 https://github.com/Baka-SU/BakaSU KernelSU || git clone https://github.com/Baka-SU/BakaSU KernelSU
-            git -C KernelSU remote show origin | sed -n '/HEAD branch/s/.*: //p' || true
-
-            # Prefer repo default branch, but fall back to known-good commit if needed.
-            DEFAULT_BRANCH="$(git -C KernelSU remote show origin | sed -n '/HEAD branch/s/.*: //p' || true)"
-            if [ -n "$DEFAULT_BRANCH" ]; then
-              git -C KernelSU checkout "$DEFAULT_BRANCH" || true
-            else
-              git -C KernelSU checkout main || true
-            fi
-
-            # Pin to the commit that was known-good in your logs.
-            git -C KernelSU fetch --depth=1 origin 460d80574 || true
-            git -C KernelSU checkout 460d80574 || true
-
-            rm -rf drivers/kernelsu
-            ln -s ../KernelSU/kernel drivers/kernelsu
-            echo "[+] Fallback KernelSU clone + symlink created."
-          fi
-
-          echo "== Installed KernelSU version =="
-          git -C KernelSU describe --tags --always || true
-          git -C KernelSU log -1 --format='%h %s' || true
-
-          test -L drivers/kernelsu
-          test -f drivers/kernelsu/Kconfig
-          grep -q 'drivers/kernelsu/Kconfig' drivers/Kconfig
-          grep -q 'CONFIG_KSU' drivers/Makefile
-
-          echo "== KernelSU Kconfig options =="
-          grep -h -E '^[[:space:]]*config ' drivers/kernelsu/Kconfig || true
-
-          # Force SuSFS as default hook choice (prevents non-GKI TP hook fallback)
-          if [ -f "drivers/kernelsu/Kconfig" ]; then
-              sed -i 's/default KSU_TRACEPOINT_HOOK/default KSU_SUSFS/' drivers/kernelsu/Kconfig
-              echo "[+] Default hook set to KSU_SUSFS in drivers/kernelsu/Kconfig"
-          fi
-
           # ---------------------------------------------------------------------------
-          # Multi-Manager Support & Universal Fallback Key Injection
-          # Guarantees that RKSU, Official KernelSU, ReSukiSU, SukiSU-Ultra, and BakaSU
-          # Manager apps are recognized without "Failed to update App Profile" errors.
+          # Universal Fallback Key Injection for multiple managers:
+          # RKSU, Official KernelSU, ReSukiSU, SukiSU-Ultra and BakaSU.
+          # This makes the kernel accept any of those manager APKs without
+          # "Failed to update App Profile" errors.
           # ---------------------------------------------------------------------------
           python3 -c '
           import os
@@ -159,43 +111,26 @@ jobs:
                       !strcmp(pkg_buf, "com.sukisu.ultra") ||
                       !strcmp(pkg_buf, "com.kowx712.supermanager") ||
                       !strcmp(pkg_buf, "com.resukisu")) {
-                      pr_info("PROJECT: Manager recognized by known package name: %s\n", pkg_buf);
+                      pr_info("PROJECT: Manager recognized by known package name: %s\\n", pkg_buf);
                       *signature_index = 0;
                       return true;
                   }
               }
               return false;"""
+
               if hook_target in content and "pkg_buf" not in content:
                   content = content.replace(hook_target, hook_replacement)
                   with open(apk_sign_path, "w") as f:
                       f.write(content)
-                  print("✅ Patched " + apk_sign_path + " with universal manager package verification")
+                  print("[+] Patched " + apk_sign_path + " with universal manager package verification")
               else:
-                  print("ℹ️ " + apk_sign_path + " already patched or target signature pattern handled")
-          ' 2>/dev/null || true
+                  print("[i] " + apk_sign_path + " already patched or target signature pattern handled")
+          else:
+              print("[!] apk_sign.c not found, multi-manager fallback will not be applied")
+          '
 
-          # ---------------------------------------------------------------------------
-          # Hook compatibility: SukiSU-Ultra uses LSM hooks and its own input handler.
-          # The tree's legacy manual hooks (ksu_vfs_read_hook, ksu_execveat_hook, etc.)
-          # must be disabled to avoid duplicate-hook link errors.
-          # ---------------------------------------------------------------------------
-          HOOK_FILES="fs/exec.c fs/open.c fs/stat.c fs/read_write.c drivers/input/input.c drivers/tty/pty.c"
-          echo "== BEFORE: ksu_ lines in hook files =="
-          grep -n 'ksu_' $HOOK_FILES || true
-          perl -pi -e 's/^(\s*#\s*(?:if|ifdef|ifndef|elif)\b.*?)\bCONFIG_KSU\b/$1CONFIG_KSU_TREE_HOOK_DISABLED/' $HOOK_FILES
-          echo "== AFTER: guards still using plain CONFIG_KSU in hook files =="
-          grep -n -E '^\s*#\s*(if|ifdef|ifndef|elif)\b.*\bCONFIG_KSU\b' $HOOK_FILES || echo "(none; all source-tree hooks are disabled)"
-          echo "== Redirected guards =="
-          grep -c 'CONFIG_KSU_TREE_HOOK_DISABLED' $HOOK_FILES || true
-
-          # Inject base KSU symbols into the source defconfig
-          DEFCONFIG="arch/arm64/configs/${DEVICE}_defconfig"
-          for sym in KSU KSU_SUSFS KSU_MULTI_MANAGER_SUPPORT THREAD_INFO_IN_TASK; do
-            grep -q "^CONFIG_${sym}=" "$DEFCONFIG" \
-              || echo "CONFIG_${sym}=y" >> "$DEFCONFIG"
-          done
-
-          echo "[+] SukiSU-Ultra Multi-Manager setup finished."
+          # Sanity check
+          grep -R "get_pkg_from_apk_path" drivers/kernelsu 2>/dev/null | head -3 || true
 
       - name: Setup NoMount (v2.1.0)
         working-directory: kernel_source
@@ -219,7 +154,6 @@ jobs:
           D=arch/arm64/boot/dts/vendor/qcom
           u() { p="$1"; shift; for f in "$@"; do sed -i "s|//${p}|${p}|g" "$D/$f"; done; }
 
-          # Panel dimensions
           sed -i 's/<154>/<1537>/g' $D/dsi-panel-j1s* $D/dsi-panel-j2*
           sed -i 's/<155>/<1544>/g' $D/dsi-panel-j3s-37-02-0a-dsc-video.dtsi
           sed -i 's/<155>/<1545>/g' $D/dsi-panel-j11-38-08-0a-fhd-cmd.dtsi
@@ -228,18 +162,15 @@ jobs:
                                   $D/dsi-panel-k11a-38-08-0a-dsc-cmd.dtsi $D/dsi-panel-l11r-38-08-0a-dsc-cmd.dtsi
           sed -i 's/<71>/<710>/g' $D/dsi-panel-j1s* $D/dsi-panel-j2*
 
-          # Smart FPS and qsync
           sed -i 's|// mi,mdss-dsi-pan-enable-smart-fps|mi,mdss-dsi-pan-enable-smart-fps|g' $D/dsi-panel*
           sed -i 's|// mi,mdss-dsi-smart-fps-max_framerate|mi,mdss-dsi-smart-fps-max_framerate|g' $D/dsi-panel*
           sed -i 's|// qcom,mdss-dsi-pan-enable-smart-fps|qcom,mdss-dsi-pan-enable-smart-fps|g' $D/dsi-panel*
           sed -i 's|qcom,mdss-dsi-qsync-min-refresh-rate|//qcom,mdss-dsi-qsync-min-refresh-rate|g' $D/dsi-panel*
 
-          # Refresh rates supported by MIUI
           sed -i 's/120 90 60/120 90 60 50 30/g' $D/dsi-panel-g7a-36-02-0c-dsc-video.dtsi \
                  $D/dsi-panel-g7a-37-02-0a-dsc-video.dtsi $D/dsi-panel-g7a-37-02-0b-dsc-video.dtsi
           sed -i 's/144 120 90 60/144 120 90 60 50 48 30/g' $D/dsi-panel-j3s-37-02-0a-dsc-video.dtsi
 
-          # Brightness controls from the DTSI files
           u '39 00 00 00 00 00 03 51 03 FF' dsi-panel-j9-38-0a-0a-fhd-video.dtsi
           u '39 00 00 00 00 00 03 51 0D FF' dsi-panel-j2-p2-1-38-0c-0a-dsc-cmd.dtsi
           u '39 00 00 00 00 00 05 51 0F 8F 00 00' dsi-panel-j1s-42-02-0a-dsc-cmd.dtsi \
@@ -264,7 +195,6 @@ jobs:
         run: |
           set -o pipefail
 
-          # LOCALVERSION is set but empty: prevents setlocalversion from adding a second "+".
           export LOCALVERSION=
 
           MAKE_ARGS="ARCH=arm64 SUBARCH=arm64 O=out CC=clang \
@@ -273,7 +203,6 @@ jobs:
 
           make $MAKE_ARGS ${DEVICE}_defconfig 2>&1 | tee ../build.log
 
-          # --- MIUI options (matching this source tree’s build.sh) ---
           scripts/config --file out/.config \
             --set-str STATIC_USERMODEHELPER_PATH /system/bin/micd \
             -e PERF_CRITICAL_RT_TASK -e SF_BINDER -e OVERLAY_FS -d DEBUG_FS \
@@ -284,16 +213,9 @@ jobs:
             -d CONFIG_MODULE_SIG_SHA512 -d CONFIG_MODULE_SIG_HASH \
             -e MI_FRAGMENTION -e PERF_HELPER -e BOOTUP_RECLAIM -e MI_RECLAIM -e RTMM
 
-          # --- Kernel version string: 4.19.325-NKR-Munch ---
-          # The "+" is included directly in the name, so the result is always 4.19.325-NKR-Munch+.
-          # (It does not depend on Git status.) LOCALVERSION_AUTO is disabled to prevent a Git hash from being added.
           scripts/config --file out/.config \
             --set-str LOCALVERSION "${KERNEL_LOCALVERSION}" -d LOCALVERSION_AUTO
 
-          # --- Networking: options used by Android 14 netd / ConnectivityService ---
-          # Without BPF cgroups/xt_bpf, sock_diag (INET_DIAG_DESTROY), and MSS clamping,
-          # Wi-Fi may appear connected while apps cannot load, even though mobile data works normally.
-          # Options unsupported by this source tree are automatically discarded by olddefconfig.
           scripts/config --file out/.config \
             -e NET -e INET -e IPV6 \
             -e BPF_SYSCALL -e BPF_JIT -e CGROUP_BPF \
@@ -303,14 +225,8 @@ jobs:
             -e INET_DIAG -e INET_UDP_DIAG -e INET_DIAG_DESTROY \
             -e IP6_NF_IPTABLES -e IP6_NF_FILTER -e IP6_NF_MANGLE -e IP6_NF_NAT
 
-          # --- Kernel logs: restrict dmesg access to root ---
-          # The "avc: denied" messages are also recorded in the kernel log. This option sets dmesg_restrict=1
-          # at boot, preventing regular apps from reading the kernel log.
-          # CONFIG_AUDIT is intentionally NOT disabled: SELinux depends on it.
-          # scripts/config --file out/.config -e SECURITY_DMESG_RESTRICT
-
-          # --- ReSukiSU / RKSU + SuSFS v2.3.0 + NoMount ---
-          echo "[*] Injecting Full RKSU / ReSukiSU + SuSFS v2.3.0 Configuration into .config..."
+          # --- ReSukiSU / RKSU + SuSFS v2.3.0 + NoMount + Multi-Manager ---
+          echo "[*] Applying RKSU / ReSukiSU + SuSFS v2.3.0 + NoMount + Multi-Manager configuration into .config..."
           scripts/config --file out/.config \
             -e KSU \
             -d KSU_KPROBES_HOOK \
@@ -319,6 +235,7 @@ jobs:
             -e KSU_THRONE_TRACKER_ALWAYS_THREADED \
             -d KSU_ALLOWLIST_WORKAROUND \
             -e KSU_LSM_SECURITY_HOOKS \
+            -e KSU_MULTI_MANAGER_SUPPORT \
             -d KSU_MANUAL_HOOK \
             -e KSU_SUSFS \
             -e KSU_SUSFS_SUS_PATH \
@@ -342,9 +259,8 @@ jobs:
 
           make $MAKE_ARGS olddefconfig 2>&1 | tee -a ../build.log
 
-          # Verify that each option is enabled (Kconfig discards unknown options).
           MISSING=0
-          for opt in CONFIG_KSU CONFIG_KSU_SUSFS CONFIG_KSU_MULTI_MANAGER_SUPPORT \
+          for opt in CONFIG_KSU CONFIG_KSU_MULTI_MANAGER_SUPPORT CONFIG_KSU_SUSFS \
                      CONFIG_THREAD_INFO_IN_TASK \
                      CONFIG_KSU_SUSFS_SUS_PATH CONFIG_KSU_SUSFS_SUS_MOUNT \
                      CONFIG_KSU_SUSFS_SUS_KSTAT CONFIG_KSU_SUSFS_SPOOF_UNAME \
@@ -365,21 +281,6 @@ jobs:
           fi
           grep -E '^CONFIG_KSU' out/.config || true
 
-          # Informational only (does not fail the build): final network option status.
-          echo "== Network options in out/.config =="
-          for opt in CONFIG_BPF_SYSCALL CONFIG_BPF_JIT CONFIG_CGROUP_BPF CONFIG_NET_CLS_BPF \
-                     CONFIG_NETFILTER_XT_MATCH_BPF CONFIG_NETFILTER_XT_MATCH_OWNER \
-                     CONFIG_NETFILTER_XT_TARGET_TCPMSS CONFIG_INET_DIAG CONFIG_INET_UDP_DIAG \
-                     CONFIG_INET_DIAG_DESTROY CONFIG_IPV6; do
-            if grep -q "^${opt}=y" out/.config; then echo "OK      ${opt}"; else echo "MISSING ${opt}"; fi
-          done
-          grep -E '^CONFIG_LOCALVERSION' out/.config || true
-          echo "== Logging/audit options in out/.config =="
-          grep -E '^CONFIG_(AUDIT|AUDITSYSCALL|SECURITY_DMESG_RESTRICT|SECURITY_SELINUX)=' out/.config || true
-          # Informational only: display symbol names vary between source trees, so they are not required.
-          echo "== Display options in out/.config =="
-          grep -E '^CONFIG_(DRM|MSM_SDE|MSM_DSI|DRM_MSM|FB_MSM|MSM_)[A-Z0-9_]*=' out/.config | head -40 || true
-
           make $MAKE_ARGS -j"$(nproc)" 2>&1 | tee -a ../build.log
 
           test -f out/arch/arm64/boot/Image
@@ -392,7 +293,6 @@ jobs:
           echo "Generating dtb..."
           find out/arch/arm64/boot/dts -name '*.dtb' -exec cat {} + > out/arch/arm64/boot/dtb
           ls -la out/arch/arm64/boot/Image out/arch/arm64/boot/dtb
-          strings out/arch/arm64/boot/Image | grep -m1 'Linux version' || true
 
       - name: Error summary (if the build fails)
         if: failure()
@@ -400,12 +300,6 @@ jobs:
           test -f build.log || exit 0
           echo "== First 40 errors =="
           grep -n -E 'error:|undefined symbol|\*\*\* ' build.log | head -40 || true
-          if grep -q -E "undefined (symbol|reference).*ksu_" build.log; then
-            echo "::error::The source tree still contains built-in KernelSU hooks that are incompatible with this KernelSU version (see the undefined reference list)."
-          fi
-          if grep -q "cannot be used against symbol '__crc_" build.log; then
-            echo "::error::genksyms failed to assign a version to an EXPORT symbol (look for 'version generation failed')."
-          fi
           grep -n "version generation failed" build.log | head -10 || true
 
       - name: Package AnyKernel3
@@ -420,8 +314,6 @@ jobs:
           REL="$(cat kernel_source/out/include/config/kernel.release)"
           sed -i "s|^kernel.string=.*|kernel.string=${REL} (HyperOS) by NKR00711|" anykernel/anykernel.sh
           sed -i '/ui_print/ s/AOSP/HyperOS/g' anykernel/anykernel.sh
-          echo "== Text in anykernel.sh (kernel.string / ui_print / aosp) =="
-          grep -n -i -E 'kernel\.string|ui_print|aosp|hyperos|miui' anykernel/anykernel.sh || true
 
           cd anykernel
           zip -r9 ../Kernel-POCO-F4-munch-HyperOS.zip ./* -x .git .gitignore out/ ./*.zip
@@ -444,7 +336,7 @@ jobs:
             --target "${{ github.sha }}" \
             --prerelease \
             --title "POCO F4 munch HyperOS kernel #${{ github.run_number }}" \
-            --notes "Kernel 4.19.325 (MIUI/HyperOS variant) + KernelSU backslashxx + NoMount ${NOMOUNT_VERSION}. Not tested on every HyperOS build; back up the stock boot image before flashing."
+            --notes "Kernel 4.19.325 (MIUI/HyperOS variant) + KernelSU (multi-manager) + NoMount ${NOMOUNT_VERSION}."
           echo "Release: https://github.com/${{ github.repository }}/releases/tag/$TAG"
 
       - name: Upload build log (if the build fails)
